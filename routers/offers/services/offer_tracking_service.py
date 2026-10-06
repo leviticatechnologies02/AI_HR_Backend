@@ -76,6 +76,12 @@ def update_offer_status(
     
     db.commit()
     db.refresh(offer)
+
+    # Offer accepted -> start onboarding (invite record + email).
+    if status == OfferStatus.accepted:
+        from services.offer_onboarding import start_onboarding_for_accepted_offer
+        start_onboarding_for_accepted_offer(db, offer)
+        db.refresh(offer)
     return offer
 
 def delete_offer(db: Session, offer_id: int) -> bool:

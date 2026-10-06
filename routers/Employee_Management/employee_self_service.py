@@ -63,13 +63,14 @@ def get_dashboard(employee_id: int, db: Session = Depends(get_db)):
     leave_this_month = (
         db.query(func.count(LeaveRequest.id))
         .filter(
+            LeaveRequest.employee_id == employee_id,
             LeaveRequest.start_date >= m_start,
         )
         .scalar() or 0
     )
     pending_leaves = (
         db.query(func.count(LeaveRequest.id))
-        .filter(LeaveRequest.status == LeaveStatus.pending)
+        .filter(LeaveRequest.employee_id == employee_id, LeaveRequest.status == LeaveStatus.pending)
         .scalar() or 0
     )
 
@@ -285,6 +286,7 @@ def get_self_leaves(
     m_end   = date(year + 1, 1, 1)
 
     q = select(LeaveRequest).where(
+        LeaveRequest.employee_id == employee_id,
         LeaveRequest.start_date >= m_start,
         LeaveRequest.start_date <  m_end,
     )
@@ -330,6 +332,7 @@ def apply_leave(
         raise HTTPException(status_code=400, detail="End date cannot be before start date")
 
     leave = LeaveRequest(
+        employee_id=employee_id,
         leave_type=leave_type,
         start_date=start_date,
         end_date=end_date,

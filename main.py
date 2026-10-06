@@ -246,7 +246,8 @@ app.include_router(hiring_funnel_router,       prefix="/api/hiring_funnel")
 app.include_router(time_hire_router,           prefix="/api/time_to_hire")
 _hr_auth = [Depends(require_roles(["superadmin", "admin", "company", "hr_admin"]))]
 app.include_router(basic_attendance.router,      prefix="/api/attendance", tags=["Attendance"], dependencies=_hr_auth)
-app.include_router(leave.router,               prefix="/api/leave", dependencies=_hr_auth)
+# leave.router already carries prefix="/leave"; mounting it at "/api/leave" produced /api/leave/leave/*.
+app.include_router(leave.router,               prefix="/api", dependencies=_hr_auth)
 app.include_router(documents_router,           prefix="/api/documents", dependencies=_hr_auth)
 app.include_router(signatures_router,          prefix="/api/signatures", dependencies=_hr_auth)
 # onboard_candidates.router is mounted at prefix="/api" with an internal

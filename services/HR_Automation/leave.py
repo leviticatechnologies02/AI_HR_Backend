@@ -20,6 +20,18 @@ LEAVE_TYPE_NAMES = {
 }
 
 
+def _parse_status(value: str) -> LeaveStatus:
+    """Accept 'Pending', 'pending', 'PENDING' (value or member name)."""
+    key = (value or "").strip().lower()
+    for member in LeaveStatus:
+        if key in (member.value.lower(), member.name.lower()):
+            return member
+    raise HTTPException(
+        status_code=400,
+        detail=f"Invalid status '{value}'. Must be one of: {[s.value for s in LeaveStatus]}",
+    )
+
+
 def _calc_days(start_date, end_date, is_half_day: bool) -> float:
     total = (end_date - start_date).days + 1
     if is_half_day and total == 1:
@@ -89,7 +101,7 @@ def list_applications(
     stmt = select(LeaveRequest)
 
     if status and status not in ("All Status", "All", ""):
-        stmt = stmt.where(LeaveRequest.status == status)
+        stmt = stmt.where(LeaveRequest.status == _parse_status(status))
 
     leaves = db.execute(stmt.order_by(LeaveRequest.applied_at.desc())).scalars().all()
     employee_map = _employee_map_for(db, leaves)
@@ -128,14 +140,7 @@ def update_leave_status(db: Session, leave_id: int, payload: LeaveRequestUpdate)
         raise HTTPException(status_code=404, detail="Leave application not found")
 
     if payload.status:
-        try:
-            leave.status = LeaveStatus(payload.status)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid status '{payload.status}'. Must be one of: "
-                       f"{[s.value for s in LeaveStatus]}",
-            )
+        leave.status = _parse_status(payload.status)
 
     if payload.approved_by is not None:
         leave.approved_by = payload.approved_by

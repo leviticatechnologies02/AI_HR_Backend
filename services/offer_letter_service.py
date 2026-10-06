@@ -375,6 +375,12 @@ def process_status_action(
 
     db.commit()
     db.refresh(offer)
+
+    # Offer accepted -> start onboarding (invite record + email).
+    if action == "accept":
+        from services.offer_onboarding import start_onboarding_for_accepted_offer
+        start_onboarding_for_accepted_offer(db, offer)
+        db.refresh(offer)
     return _map_offer(offer)
 
 
@@ -529,6 +535,15 @@ def bulk_action(db: Session, payload, user: User) -> dict:
             failed.append({"id": oid, "reason": str(exc)})
 
     db.commit()
+
+    # Offers accepted in bulk also start onboarding.
+    if payload.action.lower() == "accept":
+        from services.offer_onboarding import start_onboarding_for_accepted_offer
+        for oid in success:
+            accepted = db.query(OfferTracking).filter(OfferTracking.id == oid).first()
+            if accepted is not None:
+                start_onboarding_for_accepted_offer(db, accepted)
+
     return {
         "action":  payload.action,
         "total":   len(payload.offer_ids),

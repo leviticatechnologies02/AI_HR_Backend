@@ -5,13 +5,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi_mail import FastMail, MessageSchema, MessageType
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.dependencies import get_current_user, require_roles
 from core.mail import mail_config
-from model.models import User
+from model.models import OfferStatus, OfferTracking, User
 from model.onboarding.candidate import Candidate as OnboardingCandidate
 from model.onboarding.employee import GenderEnum
 from schema.onboarding.employee import EmployeeCreate
@@ -141,6 +141,18 @@ async def convert_to_employee(
     form_data = candidate.form_data or {}
     first_name, last_name = _split_name(candidate.full_name)
 
+    # Details already agreed in the accepted offer (position / department) are
+    # used when HR does not override them, so nothing has to be retyped.
+    offer = None
+    if candidate.email:
+        offer = (
+            db.query(OfferTracking)
+            .filter(func.lower(OfferTracking.candidate_email) == candidate.email.strip().lower())
+            .filter(OfferTracking.status == OfferStatus.accepted)
+            .order_by(OfferTracking.id.desc())
+            .first()
+        )
+
     gender = payload.gender or form_data.get("gender")
     mobile_number = payload.mobile_number or candidate.mobile or form_data.get("mobile_number")
     joining_date = payload.joining_date or date.today()
@@ -168,8 +180,8 @@ async def convert_to_employee(
         mobile_number=mobile_number,
         personal_email=candidate.email,
         official_email=payload.official_email,
-        designation=payload.designation,
-        department=payload.department,
+        designation=payload.designation or (offer.position if offer else None),
+        department=payload.department or (offer.department if offer else None),
         business_unit=payload.business_unit,
         location_id=payload.location_id,
         grade=payload.grade,

@@ -275,11 +275,18 @@ class AttendanceRecord(Base):
 class LeaveRequest(Base):
     __tablename__ = "leave_requests"
     id = Column(Integer, primary_key=True, index=True)
+    # Nullable so rows created before this column existed stay valid.
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True, index=True)
     leave_type = Column(String, nullable=False)
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
+    is_half_day = Column(Boolean, default=False, nullable=False, server_default="false")
     reason = Column(String)
     status = Column(SAEnum(LeaveStatus), default=LeaveStatus.pending)
+    approved_by = Column(Integer, nullable=True)
+    rejection_reason = Column(String, nullable=True)
+    applied_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
 
 
 

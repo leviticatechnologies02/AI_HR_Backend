@@ -3,6 +3,7 @@ print("admin_candidates router loaded")
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+import os
 from uuid import uuid4
 from datetime import datetime, timedelta
 
@@ -61,6 +62,39 @@ async def _send_invite_email(email: str, name: str, link: str, expiry: datetime)
         subtype=MessageType.html,
     )
     await FastMail(mail_config).send_message(message)
+
+
+def build_onboarding_link(token: str) -> str:
+    """Public link the candidate opens to fill the onboarding form.
+    Set FRONTEND_URL in the environment (e.g. https://hr.example.com)."""
+    base = os.getenv("FRONTEND_URL", "https://yourdomain.com").rstrip("/")
+    return f"{base}/onboarding/{token}"
+
+
+def create_onboarding_invite(
+    db: Session,
+    full_name: str,
+    email: str | None,
+    mobile: str | None,
+    verification_options: list | None = None,
+) -> Candidate:
+    """Create the onboarding record (status SENT) with a 3-day invite token.
+    Shared by the manual invite endpoint and automatic offer acceptance."""
+    verification_options = verification_options or []
+    candidate = Candidate(
+        full_name=full_name,
+        email=email,
+        mobile=mobile,
+        invite_token=str(uuid4()),
+        token_expires_at=datetime.utcnow() + timedelta(days=3),
+        status="SENT",
+        verification_options=verification_options,
+        credits_used=compute_credits(verification_options),
+    )
+    db.add(candidate)
+    db.commit()
+    db.refresh(candidate)
+    return candidate
 
 
 def _get_or_404(db: Session, candidate_id: int) -> Candidate:
@@ -136,26 +170,15 @@ async def invite_candidate(
             detail="Either email or mobile is required",
         )
 
-    token  = str(uuid4())
-    expiry = datetime.utcnow() + timedelta(days=3)
-    credits = compute_credits(payload.verification_options)
-
-    candidate = Candidate(
+    candidate = create_onboarding_invite(
+        db,
         full_name=payload.full_name,
         email=payload.email,
         mobile=payload.mobile,
-        invite_token=token,
-        token_expires_at=expiry,
-        status="SENT",
         verification_options=payload.verification_options,
-        credits_used=credits,
     )
-
-    db.add(candidate)
-    db.commit()
-    db.refresh(candidate)
-
-    onboarding_link = f"https://yourdomain.com/onboarding/{token}"
+    expiry = candidate.token_expires_at
+    onboarding_link = build_onboarding_link(candidate.invite_token)
 
     if payload.email:
         try:
