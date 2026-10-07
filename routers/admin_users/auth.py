@@ -77,6 +77,11 @@ class CurrentUserResponse(BaseModel):
     employee_id: Optional[int] = None
     location_id: Optional[int] = None
     branch_name: Optional[str] = None
+    # Shown on the profile page.
+    username: Optional[str] = None
+    company_name: Optional[str] = None
+    company_website: Optional[str] = None
+    company_id: Optional[str] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -167,6 +172,13 @@ def _active_branches(db: Session, tenant_id: int):
         .where(CompanyLocation.tenant_id == tenant_id, CompanyLocation.is_active.is_(True))
         .order_by(CompanyLocation.is_default.desc(), CompanyLocation.name)
     ).scalars().all()
+
+
+def _tenant_name(db: Session, tenant_id: Optional[int]) -> Optional[str]:
+    if tenant_id is None:
+        return None
+    tenant = db.get(Tenant, tenant_id)
+    return tenant.tenant_name if tenant else None
 
 
 def _branch_name(db: Session, location_id: Optional[int]) -> Optional[str]:
@@ -321,6 +333,11 @@ def get_me(current_user: User = Depends(get_current_user), db: Session = Depends
         "employee_id": current_user.employee_id,
         "location_id": current_user.location_id,
         "branch_name": _branch_name(db, current_user.location_id),
+        "username": current_user.username,
+        # Users created by a super admin have no company_name of their own; use their company's name.
+        "company_name": current_user.company_name or _tenant_name(db, current_user.tenant_id),
+        "company_website": current_user.company_website,
+        "company_id": current_user.company_id,
     }
 
 

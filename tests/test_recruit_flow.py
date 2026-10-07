@@ -612,3 +612,21 @@ def test_branch_admin_sees_only_their_branch_jobs_and_company_can_filter(client,
     assert sorted(jobs(admin_h, header=chn.id)) == ["hyd-job"]                   # header cannot widen it
     shown = jobs(company)["hyd-job"]
     assert shown["branch_name"] == "Hyderabad" and shown["recruiter_name"] == "rh@a.com"
+
+
+def test_me_returns_profile_fields_with_company_name_from_tenant(client, db):
+    from routers.admin_users.auth import get_current_user as auth_user
+    t, _ = _tenant_with_branches(db)
+    u = User(name="company", username="co1", email="company@x.com", hashed_password="x", role="company",
+             tenant_id=t.id, company_name=None, company_website="acme.com", is_active=True,
+             created_at=datetime.now(timezone.utc))
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    main.app.dependency_overrides[auth_user] = lambda: u
+    try:
+        me = client.get("/api/auth/me").json()
+    finally:
+        main.app.dependency_overrides.clear()
+    assert me["company_name"] == "Acme"          # taken from the company (tenant) record
+    assert me["username"] == "co1" and me["company_website"] == "acme.com"
