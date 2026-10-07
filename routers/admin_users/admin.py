@@ -5,6 +5,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, Literal
 
 from core.database import get_db
+from model.Company_Settings.location import CompanyLocation
 from model.models import User, Job
 from routers.admin_users.auth import require_roles, get_password_hash
 
@@ -23,6 +24,7 @@ class AdminUserCreate(BaseModel):
     is_active: bool = False
     password: Optional[str] = None
     tenant_id: Optional[int] = None
+    location_id: Optional[int] = None      # branch (CompanyLocation.id); admin / recruiter / hr_admin only
 
 
 class AdminUserUpdate(BaseModel):
@@ -33,9 +35,26 @@ class AdminUserUpdate(BaseModel):
     is_active: Optional[bool]
     password: Optional[str] = None
     tenant_id: Optional[int] = None
+    location_id: Optional[int] = None
 
 
-def _serialize_user(user: User) -> dict:
+BRANCH_ROLES = {"admin", "recruiter", "hr_admin"}
+
+
+def _check_branch(db: Session, role: str, tenant_id: Optional[int], location_id: Optional[int]) -> Optional[int]:
+    """Return the location_id to store. A branch only applies to branch-level roles and must
+    belong to the user's company."""
+    if location_id is None or role not in BRANCH_ROLES:
+        return None
+    if tenant_id is None:
+        raise HTTPException(status_code=400, detail="Pick a company before choosing a branch.")
+    loc = db.get(CompanyLocation, location_id)
+    if not loc or loc.tenant_id != tenant_id or not loc.is_active:
+        raise HTTPException(status_code=400, detail="That branch does not belong to the selected company.")
+    return location_id
+
+
+def _serialize_user(user: User, db: Optional[Session] = None) -> dict:
     return {
         "id": user.id,
         "name": user.name,
@@ -44,6 +63,9 @@ def _serialize_user(user: User) -> dict:
         "role": user.role,
         "is_active": user.is_active,
         "tenant_id": user.tenant_id,
+        "location_id": user.location_id,
+        "branch_name": (db.get(CompanyLocation, user.location_id).name
+                        if db is not None and user.location_id and db.get(CompanyLocation, user.location_id) else None),
         "created_at": user.created_at.isoformat() if user.created_at else None,
     }
 
@@ -57,7 +79,7 @@ def admin_summary(
 
     return {
         "total_users": total_users,
-        "users": [_serialize_user(u) for u in users]
+        "users": [_serialize_user(u, db) for u in users]
     }
 
 
@@ -67,7 +89,7 @@ def list_users(
     user: User = Depends(require_roles(["superadmin"]))
 ):
     users = db.execute(select(User)).scalars().all()
-    return [_serialize_user(u) for u in users]
+    return [_serialize_user(u, db) for u in users]
 
 
 @compat_router.get("/list")
@@ -76,7 +98,7 @@ def list_users_compat(
     user: User = Depends(require_roles(["superadmin"]))
 ):
     users = db.execute(select(User)).scalars().all()
-    return [_serialize_user(u) for u in users]
+    return [_serialize_user(u, db) for u in users]
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
@@ -106,13 +128,14 @@ def create_user(
         is_active=payload.is_active,
         hashed_password=hashed_password,
         tenant_id=payload.tenant_id,
+        location_id=_check_branch(db, payload.role, payload.tenant_id, payload.location_id),
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    return _serialize_user(new_user)
+    return _serialize_user(new_user, db)
 
 
 @router.put("/users/{user_id}")
@@ -139,11 +162,16 @@ def update_user(
         if value is not None:
             setattr(target_user, field, value)
 
+    # Branch follows the (possibly changed) role/company. Sending location_id=null clears it.
+    if "location_id" in payload.model_fields_set or "role" in payload.model_fields_set or "tenant_id" in payload.model_fields_set:
+        wanted = payload.location_id if "location_id" in payload.model_fields_set else target_user.location_id
+        target_user.location_id = _check_branch(db, target_user.role, target_user.tenant_id, wanted)
+
     db.add(target_user)
     db.commit()
     db.refresh(target_user)
 
-    return _serialize_user(target_user)
+    return _serialize_user(target_user, db)
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

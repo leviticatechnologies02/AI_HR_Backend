@@ -11,6 +11,7 @@ from jose import jwt, JWTError
 from sqlalchemy import func
 from core.database import get_db
 from core.config import settings
+from model.Company_Settings.location import CompanyLocation
 from model.models import User
 from super_admin.multi_tenant import Tenant
 
@@ -56,6 +57,9 @@ class SignupRequest(BaseModel):
     role: Literal["recruiter", "company", "candidate"]
     company_name: Optional[str] = None
     company_website: Optional[str] = None
+    # Branch (CompanyLocation.id) the recruiter works from. Required when the
+    # company already has branches; see GET /api/auth/signup-branches.
+    location_id: Optional[int] = None
 
 class LoginJSON(BaseModel):
     email: EmailStr
@@ -71,6 +75,8 @@ class CurrentUserResponse(BaseModel):
     requires_password_change: bool = False
     profile_completed: bool = True
     employee_id: Optional[int] = None
+    location_id: Optional[int] = None
+    branch_name: Optional[str] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -147,6 +153,42 @@ def get_or_create_tenant(db: Session, company_name: str, contact_email: str) -> 
     return tenant
 
 
+def _find_tenant(db: Session, company_name: Optional[str]):
+    if not company_name or not company_name.strip():
+        return None
+    return db.execute(
+        select(Tenant).where(func.lower(Tenant.tenant_name) == company_name.strip().lower())
+    ).scalar_one_or_none()
+
+
+def _active_branches(db: Session, tenant_id: int):
+    return db.execute(
+        select(CompanyLocation)
+        .where(CompanyLocation.tenant_id == tenant_id, CompanyLocation.is_active.is_(True))
+        .order_by(CompanyLocation.is_default.desc(), CompanyLocation.name)
+    ).scalars().all()
+
+
+def _branch_name(db: Session, location_id: Optional[int]) -> Optional[str]:
+    if location_id is None:
+        return None
+    loc = db.get(CompanyLocation, location_id)
+    return loc.name if loc else None
+
+
+@router.get("/signup-branches")
+def signup_branches(company_name: str, db: Session = Depends(get_db)):
+    """Public: branches of an existing company, so the signup form can ask which one the
+    recruiter works from. Returns [] for an unknown company or one with no branches."""
+    tenant = _find_tenant(db, company_name)
+    if not tenant:
+        return []
+    return [
+        {"id": b.id, "name": b.name, "city": b.city, "is_default": bool(b.is_default)}
+        for b in _active_branches(db, tenant.id)
+    ]
+
+
 @router.post("/signup", status_code=201)
 def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     existing_user = db.execute(
@@ -155,6 +197,21 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
 
     if existing_user:
         raise HTTPException(status_code=409, detail="Email already registered")
+
+    # Branch: a recruiter joining a company that has branches must pick one of them.
+    existing_tenant = _find_tenant(db, payload.company_name)
+    branches = _active_branches(db, existing_tenant.id) if existing_tenant else []
+    location_id = None
+    if payload.role == "recruiter":
+        if branches:
+            valid_ids = {b.id for b in branches}
+            if payload.location_id is None:
+                raise HTTPException(status_code=422, detail="Please select your branch.")
+            if payload.location_id not in valid_ids:
+                raise HTTPException(status_code=400, detail="That branch does not belong to this company.")
+            location_id = payload.location_id
+        elif payload.location_id is not None:
+            raise HTTPException(status_code=400, detail="That branch does not belong to this company.")
 
     tenant = get_or_create_tenant(db, payload.company_name, payload.email)
 
@@ -166,6 +223,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
         company_name=payload.company_name,
         company_website=payload.company_website,
         tenant_id=tenant.id,
+        location_id=location_id,
         is_active=False  
     )
 
@@ -251,7 +309,7 @@ def login_form(
 
 
 @router.get("/me", response_model=CurrentUserResponse)
-def get_me(current_user: User = Depends(get_current_user)):
+def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return {
         "id": current_user.id,
         "name": current_user.name,
@@ -261,6 +319,8 @@ def get_me(current_user: User = Depends(get_current_user)):
         "requires_password_change": current_user.requires_password_change,
         "profile_completed": current_user.profile_completed,
         "employee_id": current_user.employee_id,
+        "location_id": current_user.location_id,
+        "branch_name": _branch_name(db, current_user.location_id),
     }
 
 

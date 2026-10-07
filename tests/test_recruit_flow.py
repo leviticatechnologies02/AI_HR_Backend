@@ -496,3 +496,119 @@ def test_company_sees_its_recruiters_candidates_not_other_companies(client, db):
     assert names_for(u["company"]) == ["c1@x.com", "c2@x.com"]
     assert names_for(u["admin"]) == ["c1@x.com", "c2@x.com"]
     assert names_for(u["other"]) == ["c3@x.com"]
+
+
+# ---------- branches ----------
+
+def _tenant_with_branches(db):
+    from model.Company_Settings.location import CompanyLocation
+    from super_admin.multi_tenant import Tenant
+    t = Tenant(tenant_name="Acme", contact_email="a@acme.com", plan="BASIC", status="active")
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    locs = []
+    for name in ("Hyderabad", "Chennai"):
+        l = CompanyLocation(tenant_id=t.id, name=name, timezone="Asia/Kolkata", is_active=True,
+                            is_default=(name == "Hyderabad"))
+        db.add(l)
+        db.commit()
+        db.refresh(l)
+        locs.append(l)
+    return t, locs
+
+
+def _signup(client, **kw):
+    body = {"name": "Rec", "email": "rec@acme.com", "password": "secret1", "role": "recruiter",
+            "company_name": "Acme"}
+    body.update(kw)
+    return client.post("/api/auth/signup", json=body)
+
+
+def test_signup_lists_branches_and_requires_one(client, db):
+    t, (hyd, chn) = _tenant_with_branches(db)
+    names = [b["name"] for b in client.get("/api/auth/signup-branches", params={"company_name": "acme"}).json()]
+    assert names == ["Hyderabad", "Chennai"]                       # default first, name match is case-insensitive
+    assert client.get("/api/auth/signup-branches", params={"company_name": "Nope"}).json() == []
+
+    assert _signup(client).status_code == 422                       # branch is required for this company
+    assert _signup(client, location_id=99999).status_code == 400    # not one of this company's branches
+    r = _signup(client, location_id=chn.id)
+    assert r.status_code == 201, r.text
+    assert db.query(User).filter(User.email == "rec@acme.com").one().location_id == chn.id
+
+
+def test_signup_for_new_company_without_branches_still_works(client, db):
+    assert _signup(client, company_name="Brand New Co").status_code == 201
+
+
+def test_me_returns_branch_and_admin_user_form_keeps_it(client, db):
+    from routers.admin_users.auth import get_current_user as auth_user
+    t, (hyd, chn) = _tenant_with_branches(db)
+    _signup(client, location_id=chn.id)
+    rec = db.query(User).filter(User.email == "rec@acme.com").one()
+    main.app.dependency_overrides[auth_user] = lambda: rec
+    try:
+        me = client.get("/api/auth/me").json()
+        assert me["location_id"] == chn.id and me["branch_name"] == "Chennai"
+    finally:
+        main.app.dependency_overrides.clear()
+
+    # Super admin creates a branch admin: location_id must be stored and returned (it used to be dropped).
+    from core.dependencies import get_current_user as core_user
+    sup = User(name="S", email="s@x.com", hashed_password="x", role="superadmin", is_active=True,
+               created_at=datetime.now(timezone.utc))
+    main.app.dependency_overrides[auth_user] = lambda: sup
+    main.app.dependency_overrides[core_user] = lambda: sup
+    try:
+        r = client.post("/api/admin/superadmin/users", json={"name": "BA", "email": "ba@acme.com", "role": "admin",
+                        "password": "secret1", "tenant_id": t.id, "location_id": hyd.id})
+        assert r.status_code == 201, r.text
+        assert r.json()["location_id"] == hyd.id and r.json()["branch_name"] == "Hyderabad"
+        # a branch from another company is refused
+        full = {"name": "BA", "username": None, "email": "ba@acme.com", "role": "admin", "is_active": True}
+        r2 = client.put(f"/api/admin/superadmin/users/{r.json()['id']}", json={**full, "location_id": 99999})
+        assert r2.status_code == 400
+        # null clears it
+        r3 = client.put(f"/api/admin/superadmin/users/{r.json()['id']}", json={**full, "location_id": None})
+        assert r3.json()["location_id"] is None
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_branch_admin_sees_only_their_branch_jobs_and_company_can_filter(client, db):
+    from core.dependencies import get_current_user as core_user
+    from routers.admin_users.auth import get_current_user as auth_user
+    t, (hyd, chn) = _tenant_with_branches(db)
+
+    def mk(email, role, loc):
+        u = User(name=email, email=email, hashed_password="x", role=role, tenant_id=t.id, location_id=loc,
+                 is_active=True, created_at=datetime.now(timezone.utc))
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        return u
+
+    r_h, r_c = mk("rh@a.com", "recruiter", hyd.id), mk("rc@a.com", "recruiter", chn.id)
+    company, admin_h = mk("co@a.com", "company", None), mk("ah@a.com", "admin", hyd.id)
+    for name, rec in (("hyd-job", r_h), ("chn-job", r_c)):
+        db.add(Job(title=name, department="Eng", employment_type="Full-time", description="d",
+                   status="Published", role=name, recruiter_id=rec.id))
+    db.commit()
+
+    def jobs(user, header=None):
+        main.app.dependency_overrides[auth_user] = lambda: user
+        main.app.dependency_overrides[core_user] = lambda: user
+        try:
+            r = client.get("/api/jobs/list", headers=({"X-Location-Id": str(header)} if header else {}))
+            assert r.status_code == 200, r.text
+            return {j["title"]: j for j in r.json()}
+        finally:
+            main.app.dependency_overrides.clear()
+
+    assert sorted(jobs(company)) == ["chn-job", "hyd-job"]                       # whole company
+    assert sorted(jobs(company, header=chn.id)) == ["chn-job"]                   # branch selector
+    assert sorted(jobs(admin_h)) == ["hyd-job"]                                  # branch admin: locked
+    assert sorted(jobs(admin_h, header=chn.id)) == ["hyd-job"]                   # header cannot widen it
+    shown = jobs(company)["hyd-job"]
+    assert shown["branch_name"] == "Hyderabad" and shown["recruiter_name"] == "rh@a.com"

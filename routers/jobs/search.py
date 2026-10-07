@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Optional, List
 from model.models import Job, User
 from core.database import get_db
+from typing import Optional
+from core.dependencies import get_current_location_id
 from .dependencies import require_roles, JOB_VIEW_ROLES, visible_jobs_clause
 
 router = APIRouter()
@@ -16,9 +18,10 @@ def search_jobs(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(JOB_VIEW_ROLES))
+    user: User = Depends(require_roles(JOB_VIEW_ROLES)),
+    location_id: Optional[int] = Depends(get_current_location_id),
 ):
-    statement = select(Job).where(visible_jobs_clause(user))
+    statement = select(Job).where(visible_jobs_clause(user, location_id))
     jobs = db.exec(statement).all()
 
     filtered_jobs = []
