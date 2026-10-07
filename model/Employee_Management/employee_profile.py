@@ -1,4 +1,3 @@
-
 from datetime import datetime, date
 from sqlalchemy import (
     Column, Integer, String, Date, DateTime, Boolean,
@@ -52,6 +51,7 @@ class EmployeePersonalInfo(Base):
 
 class EmployeeEmergencyContact(Base):
     __tablename__ = "employee_emergency_contacts"
+    __table_args__ = {"extend_existing": True}
 
     id          = Column(Integer, primary_key=True, index=True)
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
