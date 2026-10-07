@@ -9,6 +9,7 @@ from core.database import get_db
 from model.models import LegacyCandidate as Candidate, User, Job, Application
 from core.dependencies import get_current_user
 from sqlmodel import select
+from core.job_access import sees_all_jobs, visible_jobs_clause
 from typing import List, Optional
 
 router = APIRouter(prefix="/results", tags=["Aptitude Results"])
@@ -19,9 +20,9 @@ def get_all_results(db: Session = Depends(get_db), user: User = Depends(get_curr
     
     recruiter_candidate_emails = set()
     
-    if user.role.lower() != "admin":
+    if not sees_all_jobs(user):
         
-        job_ids = list(db.exec(select(Job.id).where(Job.recruiter_id == user.id)).all())
+        job_ids = list(db.exec(select(Job.id).where(visible_jobs_clause(user))).all())
         
         if job_ids:
             
@@ -44,7 +45,7 @@ def get_all_results(db: Session = Depends(get_db), user: User = Depends(get_curr
     query = db.query(Candidate).filter(Candidate.verified == 1)
     
    
-    if user.role.lower() != "admin" and recruiter_candidate_emails:
+    if not sees_all_jobs(user) and recruiter_candidate_emails:
         from sqlalchemy import func
         query = query.filter(
             func.lower(func.trim(Candidate.email)).in_(
@@ -112,8 +113,8 @@ def get_statistics(db: Session = Depends(get_db), user: User = Depends(get_curre
     
     recruiter_candidate_emails = set()
     
-    if user.role.lower() != "admin":
-        job_ids = list(db.exec(select(Job.id).where(Job.recruiter_id == user.id)).all())
+    if not sees_all_jobs(user):
+        job_ids = list(db.exec(select(Job.id).where(visible_jobs_clause(user))).all())
         if job_ids:
             applications = db.exec(select(Application).where(Application.job_id.in_(job_ids))).all()
             for app in applications:
@@ -128,7 +129,7 @@ def get_statistics(db: Session = Depends(get_db), user: User = Depends(get_curre
                         recruiter_candidate_emails.add(candidate.email.lower().strip())
     
     query = db.query(Candidate).filter(Candidate.verified == 1)
-    if user.role.lower() != "admin" and recruiter_candidate_emails:
+    if not sees_all_jobs(user) and recruiter_candidate_emails:
         from sqlalchemy import func
         query = query.filter(
             func.lower(func.trim(Candidate.email)).in_(

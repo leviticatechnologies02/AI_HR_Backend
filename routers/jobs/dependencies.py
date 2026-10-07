@@ -9,3 +9,9 @@ def require_roles(allowed_roles: List[str]):
             raise HTTPException(status_code=403, detail="Operation not permitted")
         return current_user
     return role_checker
+
+
+from core.job_access import visible_jobs_clause, sees_all_jobs  # noqa: F401  (single shared rule)
+
+# Roles that may view and manage jobs.
+JOB_VIEW_ROLES = ["recruiter", "company", "admin", "hr_admin", "superadmin"]

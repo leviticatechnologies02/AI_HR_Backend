@@ -3,6 +3,7 @@ from sqlalchemy import text, func
 from schema.assignment import AssignmentCreate
 from model.models import Assignment, Assessment, LegacyCandidate, User, Job, Application, Candidate, CandidateRecord
 from sqlmodel import select
+from core.job_access import sees_all_jobs, visible_jobs_clause
 from typing import List, Dict, Any, Optional
 
 
@@ -18,7 +19,7 @@ def _get_recruiter_candidate_record_ids(db: Session, user: User) -> List[int]:
     Resolve candidate_records IDs owned by a recruiter through job applications.
     Assignments in this module are created using candidate_records.id from resume endpoints.
     """
-    job_ids = [row[0] for row in db.execute(select(Job.id).where(Job.recruiter_id == user.id)).all()]
+    job_ids = [row[0] for row in db.execute(select(Job.id).where(visible_jobs_clause(user))).all()]
     if not job_ids:
         return []
 
@@ -67,7 +68,7 @@ def get_assignments(db: Session, user: Optional[User] = None):
     query = db.query(Assignment)
     
     # Filter by recruiter if user is provided and not admin
-    if user and user.role.lower() != "admin":
+    if user and not sees_all_jobs(user):
         candidate_record_ids = _get_recruiter_candidate_record_ids(db, user)
         if not candidate_record_ids:
             return []
@@ -85,7 +86,7 @@ def get_assignments_with_completion_status(db: Session, user: Optional[User] = N
     
    
     recruiter_candidate_record_ids = set()
-    if user and user.role.lower() != "admin":
+    if user and not sees_all_jobs(user):
         recruiter_candidate_record_ids = set(_get_recruiter_candidate_record_ids(db, user))
     result = []
     
@@ -232,7 +233,7 @@ def get_assignments_with_completion_status(db: Session, user: Optional[User] = N
                 existing_combinations.add((assignment_dict["candidate_id"], assignment_dict["assessment_id"]))
         
         
-        if user and user.role.lower() != "admin" and recruiter_candidate_record_ids:
+        if user and not sees_all_jobs(user) and recruiter_candidate_record_ids:
             
             candidate_ids_list = list(recruiter_candidate_record_ids)
             if candidate_ids_list:

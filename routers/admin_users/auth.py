@@ -10,6 +10,7 @@ from jose import jwt, JWTError
 
 from sqlalchemy import func
 from core.database import get_db
+from core.config import settings
 from model.models import User
 from super_admin.multi_tenant import Tenant
 
@@ -32,7 +33,7 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-SECRET_KEY = "your_super_secret_key"
+SECRET_KEY = settings.SECRET_KEY   # from .env, never hard-coded
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440
 
@@ -101,6 +102,9 @@ def get_current_user(
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
         if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        # Never accept a candidate-portal token as a staff token.
+        if payload.get("type") == "candidate":
             raise HTTPException(status_code=401, detail="Invalid token")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")

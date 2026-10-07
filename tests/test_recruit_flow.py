@@ -28,6 +28,9 @@ RR = "routers.Resume_parsing.routers.resume_router"
 
 @pytest.fixture(autouse=True)
 def fresh_db():
+    # Hard stop: never drop tables on a real database.
+    if engine.url.get_backend_name() != "sqlite":
+        pytest.exit(f"Refusing to run: tests would wipe {engine.url}. Use SQLite.", returncode=2)
     SQLModel.metadata.drop_all(engine)
     SQLModel.metadata.create_all(engine)
     yield
@@ -337,3 +340,159 @@ def test_self_service_leaves_are_per_employee(client, db):
         assert la["total"] == 1 and lb["total"] == 0
     finally:
         main.app.dependency_overrides.clear()
+
+
+# ---------- security: tokens ----------
+
+def test_candidate_token_cannot_be_used_as_staff_token(client, db):
+    """A candidate token has sub=<candidate id>. It must never be accepted as the
+    staff user with the same numeric id."""
+    staff = User(name="HR", email="hr@x.com", hashed_password="x", role="hr_admin",
+                 is_active=True, created_at=datetime.now(timezone.utc))
+    db.add(staff)
+    cand = Candidate(name="Eve", email="eve@x.com", role="candidate", skills=None,
+                     resume_url=None, notes=None, recruiter_comments=None)
+    db.add(cand)
+    db.commit()
+    db.refresh(staff)
+    db.refresh(cand)
+    assert staff.id == cand.id            # same numeric id on purpose
+    token = create_candidate_token(cand.id)
+    r = client.get("/api/leave/", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code in (401, 403), f"candidate token reached HR endpoint: {r.status_code}"
+
+
+def test_tokens_are_signed_with_env_secret_not_hardcoded(client, db):
+    from jose import jwt
+    forged = jwt.encode({"sub": "1"}, "your_super_secret_key", algorithm="HS256")
+    r = client.get("/api/leave/", headers={"Authorization": f"Bearer {forged}"})
+    assert r.status_code == 401
+
+
+# ---------- leave reports ----------
+
+def test_leave_balance_report_is_per_employee_and_type_aware(client, db):
+    from datetime import date
+    from model.models import LeaveRequest, LeaveStatus
+    from model.onboarding.employee import Employee, GenderEnum
+    a = _employee(db)
+    b = Employee(first_name="Sita", gender=GenderEnum.female, employee_code="EMP0002",
+                 mobile_number="9000000002", joining_date=date(2024, 1, 1), is_active=True)
+    db.add(b)
+    db.commit()
+    db.refresh(b)
+    db.add_all([
+        LeaveRequest(employee_id=a.id, leave_type="CL", start_date=date(2026, 3, 2), end_date=date(2026, 3, 4),
+                     status=LeaveStatus.approved),                       # 3 casual days for A
+        LeaveRequest(employee_id=b.id, leave_type="Sick Leave", start_date=date(2026, 3, 9), end_date=date(2026, 3, 10),
+                     status=LeaveStatus.approved),                       # 2 sick days for B
+        LeaveRequest(employee_id=a.id, leave_type="EL", start_date=date(2026, 4, 1), end_date=date(2026, 4, 1),
+                     status=LeaveStatus.pending),                        # pending: not counted
+    ])
+    db.commit()
+    _hr_user_override()
+    try:
+        rows = {r["employee_id"]: r for r in client.get("/api/reports/leave/balance").json()}
+        assert rows["EMP0001"]["casual_leave_used"] == 3 and rows["EMP0001"]["sick_leave_used"] == 0
+        assert rows["EMP0001"]["earned_leave_used"] == 0
+        assert rows["EMP0002"]["sick_leave_used"] == 2 and rows["EMP0002"]["casual_leave_used"] == 0
+
+        recs = client.get("/api/reports/leave/records").json()
+        assert len(recs) == 3 and all(r["id"] for r in recs)
+        approved = client.get("/api/reports/leave/records", params={"status": "Approved"}).json()
+        assert len(approved) == 2
+        assert client.get("/api/reports/leave/records", params={"status": "bogus"}).status_code == 400
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+# ---------- jobs: who sees which jobs ----------
+
+def _users_and_jobs(db):
+    def mk(email, role, tenant):
+        u = User(name=email, email=email, hashed_password="x", role=role, tenant_id=tenant,
+                 is_active=True, created_at=datetime.now(timezone.utc))
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        return u
+
+    r1, r2 = mk("r1@a.com", "recruiter", 1), mk("r2@a.com", "recruiter", 1)
+    r3 = mk("r3@b.com", "recruiter", 2)
+    company, admin = mk("c@a.com", "company", 1), mk("ad@a.com", "admin", 1)
+    other_company, sup = mk("c@b.com", "company", 2), mk("s@x.com", "superadmin", None)
+    jobs = {}
+    for name, rec in (("j1", r1), ("j2", r2), ("j3", r3)):
+        j = Job(title=name, department="Eng", employment_type="Full-time", description="d",
+                status="Published", role=name, recruiter_id=rec.id)
+        db.add(j)
+        db.commit()
+        db.refresh(j)
+        jobs[name] = j
+    return dict(r1=r1, r2=r2, r3=r3, company=company, admin=admin, other=other_company, sup=sup), jobs
+
+
+def _list_titles(client, user):
+    from core.dependencies import get_current_user as core_user
+    from routers.admin_users.auth import get_current_user as auth_user
+    main.app.dependency_overrides[auth_user] = lambda: user
+    main.app.dependency_overrides[core_user] = lambda: user
+    try:
+        r = client.get("/api/jobs/list")
+        assert r.status_code == 200, r.text
+        return sorted(j["title"] for j in r.json())
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_company_and_admin_see_jobs_created_by_their_recruiters(client, db):
+    u, _ = _users_and_jobs(db)
+    assert _list_titles(client, u["r1"]) == ["j1"]                 # recruiter: own only
+    assert _list_titles(client, u["company"]) == ["j1", "j2"]      # company: its recruiters' jobs
+    assert _list_titles(client, u["admin"]) == ["j1", "j2"]        # admin of same company
+    assert _list_titles(client, u["other"]) == ["j3"]              # other company: never j1/j2
+    assert _list_titles(client, u["sup"]) == ["j1", "j2", "j3"]    # superadmin: all
+
+
+def test_company_can_edit_and_delete_own_company_jobs_only(client, db):
+    from core.dependencies import get_current_user as core_user
+    from routers.admin_users.auth import get_current_user as auth_user
+    u, jobs = _users_and_jobs(db)
+    main.app.dependency_overrides[auth_user] = lambda: u["company"]
+    main.app.dependency_overrides[core_user] = lambda: u["company"]
+    try:
+        assert client.delete(f"/api/jobs/delete/{jobs['j3'].id}").status_code == 404   # other company
+        assert client.delete(f"/api/jobs/delete/{jobs['j2'].id}").status_code == 200   # own company
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_company_sees_its_recruiters_candidates_not_other_companies(client, db):
+    from model.models import Application
+    from core.dependencies import get_current_user as core_user
+    from routers.admin_users.auth import get_current_user as auth_user
+    u, jobs = _users_and_jobs(db)
+    for name, email in (("j1", "c1@x.com"), ("j2", "c2@x.com"), ("j3", "c3@x.com")):
+        cand = Candidate(name=name, email=email, role="candidate", skills=None,
+                         resume_url=None, notes=None, recruiter_comments=None)
+        db.add(cand)
+        db.commit()
+        db.refresh(cand)
+        db.add(Application(job_id=jobs[name].id, candidate_id=cand.id, candidate_name=name,
+                           candidate_email=email, stage="Applied"))
+    db.commit()
+
+    def names_for(user):
+        main.app.dependency_overrides[core_user] = lambda: user
+        main.app.dependency_overrides[auth_user] = lambda: user
+        try:
+            r = client.get("/api/pipeline/candidates/")
+            assert r.status_code == 200, r.text
+            return sorted(c["email"] for c in r.json())
+        finally:
+            main.app.dependency_overrides.clear()
+
+    assert names_for(u["r1"]) == ["c1@x.com"]
+    assert names_for(u["company"]) == ["c1@x.com", "c2@x.com"]
+    assert names_for(u["admin"]) == ["c1@x.com", "c2@x.com"]
+    assert names_for(u["other"]) == ["c3@x.com"]

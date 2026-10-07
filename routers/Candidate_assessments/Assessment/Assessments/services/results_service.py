@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from model.models import LegacyCandidate, User, Job, Application
 from sqlmodel import select
+from core.job_access import sees_all_jobs, visible_jobs_clause
 from typing import List, Dict, Any, Optional
 
 
@@ -21,8 +22,8 @@ def get_all_assessment_results(db: Session, user: Optional[User] = None) -> List
    
     recruiter_candidate_emails = set()
     
-    if user and user.role.lower() != "admin":
-        job_ids = list(db.exec(select(Job.id).where(Job.recruiter_id == user.id)).all())
+    if user and not sees_all_jobs(user):
+        job_ids = list(db.exec(select(Job.id).where(visible_jobs_clause(user))).all())
         print(f"🔍 Recruiter {user.id} has {len(job_ids)} jobs")
         if job_ids:
             applications = db.exec(select(Application).where(Application.job_id.in_(job_ids))).all()
@@ -43,7 +44,7 @@ def get_all_assessment_results(db: Session, user: Optional[User] = None) -> List
             print(f"🔍 Sample emails: {list(recruiter_candidate_emails)[:5]}")
     
    
-    if user and user.role.lower() != "admin" and not recruiter_candidate_emails:
+    if user and not sees_all_jobs(user) and not recruiter_candidate_emails:
         print(f"⚠️ Recruiter {user.id} has no candidates, returning empty results")
         return []
     
@@ -57,14 +58,14 @@ def get_all_assessment_results(db: Session, user: Optional[User] = None) -> List
         )
         
         
-        if user and user.role.lower() != "admin" and recruiter_candidate_emails:
+        if user and not sees_all_jobs(user) and recruiter_candidate_emails:
             from sqlalchemy import func
             query = query.filter(
                 func.lower(func.trim(LegacyCandidate.email)).in_(
                     [email.lower().strip() for email in recruiter_candidate_emails]
                 )
             )
-        elif user and user.role.lower() != "admin":
+        elif user and not sees_all_jobs(user):
             
             query = query.filter(False) 
         
@@ -104,7 +105,7 @@ def get_all_assessment_results(db: Session, user: Optional[User] = None) -> List
     
     
     try:
-        if user and user.role.lower() != "admin":
+        if user and not sees_all_jobs(user):
             if recruiter_candidate_emails:
                 
                 placeholders = ','.join([f':email{i}' for i in range(len(recruiter_candidate_emails))])
@@ -164,7 +165,7 @@ def get_all_assessment_results(db: Session, user: Optional[User] = None) -> List
     
     
     try:
-        if user and user.role.lower() != "admin":
+        if user and not sees_all_jobs(user):
             if recruiter_candidate_emails:
                 
                 placeholders = ','.join([f':email{i}' for i in range(len(recruiter_candidate_emails))])
@@ -248,7 +249,7 @@ def get_all_assessment_results(db: Session, user: Optional[User] = None) -> List
     results_list = list(candidate_results_map.values())
     
     print(f"✅ Fetched results for {len(results_list)} candidates")
-    if user and user.role.lower() != "admin":
+    if user and not sees_all_jobs(user):
         print(f"🔒 Filtered results for recruiter {user.id}: {len(results_list)} candidates")
         if results_list:
             sample_emails = [r.get('candidate_email', 'N/A') for r in results_list[:3]]

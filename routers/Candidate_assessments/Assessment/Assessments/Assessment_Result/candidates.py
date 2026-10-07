@@ -5,6 +5,7 @@ from core.database import get_db
 from core.dependencies import get_current_user
 from model.models import User, Job, Application
 from sqlmodel import select
+from core.job_access import sees_all_jobs, visible_jobs_clause
 from schema import schemas
 
 
@@ -13,10 +14,10 @@ router = APIRouter(prefix="/api/candidates",tags=["candidates"])
 @router.get("/", response_model=list[schemas.CandidateSchema])
 def read_candidates(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     
-    if user.role.lower() == "admin":
+    if sees_all_jobs(user):
         return db.query(model.models.Candidate).all()
     
-    job_ids = list(db.exec(select(Job.id).where(Job.recruiter_id == user.id)).all())
+    job_ids = list(db.exec(select(Job.id).where(visible_jobs_clause(user))).all())
     
     if not job_ids:
         return []

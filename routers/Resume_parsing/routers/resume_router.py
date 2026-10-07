@@ -14,6 +14,7 @@ from routers.Candidate_assessments.Assessment.utils.stage_sync import update_can
 from sqlmodel import select
 from sqlalchemy import text, func
 from core.dependencies import get_current_user
+from core.job_access import sees_all_jobs, visible_jobs_clause
 
 class StageUpdate(BaseModel):
     stage: str
@@ -48,9 +49,9 @@ def list_candidates(
     recruiter_candidate_emails = set()
     recruiter_has_jobs = False
     
-    if user.role.lower() != "admin":
-        # Get all job IDs for this recruiter
-        job_ids = [row[0] for row in db.execute(select(Job.id).where(Job.recruiter_id == user.id)).all()]
+    if not sees_all_jobs(user):
+        # Job IDs visible to this user (own jobs, or their company's jobs)
+        job_ids = [row[0] for row in db.execute(select(Job.id).where(visible_jobs_clause(user))).all()]
         print(f" Recruiter {user.id} has {len(job_ids)} jobs")
         recruiter_has_jobs = len(job_ids) > 0
         
@@ -77,7 +78,7 @@ def list_candidates(
     query = db.query(CandidateRecord).order_by(CandidateRecord.id.desc())
     
     
-    if user.role.lower() != "admin":
+    if not sees_all_jobs(user):
         if recruiter_candidate_emails:
             
             query = query.filter(

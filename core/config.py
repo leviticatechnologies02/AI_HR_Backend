@@ -36,3 +36,13 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+_WEAK_SECRETS = {"your_super_secret_key", "secret", "changeme", "change-me", "test", "testsecret"}
+if settings.SECRET_KEY in _WEAK_SECRETS or len(settings.SECRET_KEY) < 32:
+    import warnings
+    warnings.warn(
+        "SECRET_KEY is weak or a placeholder. Set a random value of 32+ characters in .env "
+        "(python -c \"import secrets; print(secrets.token_urlsafe(48))\"). "
+        "Anyone who knows the key can forge login tokens.",
+        stacklevel=2,
+    )

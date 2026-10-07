@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, extract
 from typing import List, Optional
@@ -6,7 +6,7 @@ from datetime import date
  
 from core.database import get_db
 from core.dependencies import get_current_user
-from model.models import User, LeaveRequest
+from model.models import User, LeaveRequest, LeaveStatus
 from model.onboarding.employee import Employee
  
 from schema.Reports.leave_reports import (
@@ -27,6 +27,31 @@ SICK_TOTAL    = 10
 EARNED_TOTAL  = 15
 ACCRUAL_RATE  = 1.25  
 DAILY_RATE    = 2000     
+
+
+def _leave_days(leave) -> float:
+    days = (leave.end_date - leave.start_date).days + 1
+    return 0.5 if getattr(leave, "is_half_day", False) and days == 1 else float(days)
+
+
+def _type_key(leave_type: Optional[str]) -> Optional[str]:
+    """Map the different spellings the app stores (CL, Casual Leave, CASUAL...) to one key."""
+    t = (leave_type or "").strip().lower()
+    if t in ("cl", "casual", "casual leave"):
+        return "casual"
+    if t in ("sl", "sick", "sick leave"):
+        return "sick"
+    if t in ("el", "earned", "earned leave", "pl", "privilege leave"):
+        return "earned"
+    return None
+
+
+def _status_member(value: str) -> LeaveStatus:
+    key = (value or "").strip().lower()
+    for m in LeaveStatus:
+        if key in (m.value.lower(), m.name.lower()):
+            return m
+    raise HTTPException(status_code=400, detail=f"Invalid status '{value}'")
  
 
  
@@ -107,20 +132,21 @@ def get_employee_leave_balance(
  
     employees = db.execute(stmt).scalars().all()
     result = []
- 
+
+    # Approved leave days per employee and leave type (one query, not one per employee).
+    used_days: dict = {}
+    approved = db.execute(
+        select(LeaveRequest).where(LeaveRequest.status == LeaveStatus.approved)
+    ).scalars().all()
+    for lv in approved:
+        key = _type_key(lv.leave_type)
+        if key and lv.employee_id is not None:
+            used_days[(lv.employee_id, key)] = used_days.get((lv.employee_id, key), 0.0) + _leave_days(lv)
+
     for emp in employees:
-        # Count approved leaves per type from LeaveRequest
-        def used(leave_type):
-            return db.execute(
-                select(func.count()).select_from(LeaveRequest).where(
-                    LeaveRequest.leave_type == leave_type,
-                    LeaveRequest.status == "approved",
-                )
-            ).scalar_one()
- 
-        casual_used = used("CASUAL")
-        sick_used   = used("SICK")
-        earned_used = used("EARNED")
+        casual_used = int(round(used_days.get((emp.id, "casual"), 0)))
+        sick_used   = int(round(used_days.get((emp.id, "sick"), 0)))
+        earned_used = int(round(used_days.get((emp.id, "earned"), 0)))
  
         result.append(LeaveBalanceItem(
             employee_name=f"{emp.first_name} {emp.last_name or ''}".strip(),
@@ -310,7 +336,7 @@ def get_employee_leave_records(
  
     leave_stmt = select(LeaveRequest)
     if status:
-        leave_stmt = leave_stmt.where(LeaveRequest.status == status)
+        leave_stmt = leave_stmt.where(LeaveRequest.status == _status_member(status))
     if leave_type:
         leave_stmt = leave_stmt.where(LeaveRequest.leave_type == leave_type)
     leaves = db.execute(leave_stmt).scalars().all()
@@ -321,6 +347,11 @@ def get_employee_leave_records(
         if not emp:
             continue
         result.append(EmployeeLeaveRecordItem(
+            id=leave.id,
+            start_date=leave.start_date,
+            end_date=leave.end_date,
+            email=emp.official_email,
+            date_of_birth=emp.date_of_birth,
             employee_code=emp.employee_code,
             employee_name=f"{emp.first_name} {emp.last_name or ''}".strip(),
             department=emp.department,

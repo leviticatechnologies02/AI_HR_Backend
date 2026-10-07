@@ -75,6 +75,11 @@ class LeaveEncashmentItem(BaseModel):
  
  
 class EmployeeLeaveRecordItem(BaseModel):
+    id: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    email: Optional[str] = None
+    date_of_birth: Optional[date] = None
     employee_code: str
     employee_name: str
     department: Optional[str]

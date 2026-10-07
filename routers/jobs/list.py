@@ -4,18 +4,18 @@ from sqlalchemy.orm import selectinload
 from typing import List
 from model.models import Job, User, Application
 from core.database import get_db
-from .dependencies import require_roles
+from .dependencies import require_roles, JOB_VIEW_ROLES, visible_jobs_clause
 
 router = APIRouter()
 
 @router.get("/list")
 def list_jobs(
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(["company", "recruiter"]))
+    user: User = Depends(require_roles(JOB_VIEW_ROLES))
 ):
     
     from sqlalchemy import select as sa_select
-    statement = sa_select(Job).where(Job.recruiter_id == user.id).options(selectinload(Job.applications))
+    statement = sa_select(Job).where(visible_jobs_clause(user)).options(selectinload(Job.applications))
     result = db.execute(statement)
     jobs = result.scalars().all()
     jobs_with_applications = []

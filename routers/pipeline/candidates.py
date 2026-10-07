@@ -7,6 +7,7 @@ from core.database import get_db
 from core.dependencies import get_current_user
 from model.models import User, Job, Application, Candidate
 from sqlmodel import select
+from core.job_access import sees_all_jobs, visible_jobs_clause
 
 
 router = APIRouter(prefix="/candidates", tags=["Pipeline"])
@@ -49,10 +50,10 @@ class PipelineCandidateUpdate(BaseModel):
 @router.get("/", response_model=List[PipelineCandidateOut])
 def list_candidates(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
 
-    if user.role.lower() == "admin":
+    if sees_all_jobs(user):
         job_ids = list(db.exec(select(Job.id)).all())
     else:
-        job_ids = list(db.exec(select(Job.id).where(Job.recruiter_id == user.id)).all())
+        job_ids = list(db.exec(select(Job.id).where(visible_jobs_clause(user))).all())
 
     if not job_ids:
         return []

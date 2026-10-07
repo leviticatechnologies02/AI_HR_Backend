@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, List
 from model.models import Job, User
 from core.database import get_db
-from .dependencies import require_roles
+from .dependencies import require_roles, JOB_VIEW_ROLES, visible_jobs_clause
 
 router = APIRouter(tags=["Jobs"])
 @router.put("/update/{job_id}", response_model=Job)
@@ -30,11 +30,11 @@ def update_job(
     jd_file: Optional[str] = None,
     status: Optional[str] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(["company", "recruiter"]))
+    user: User = Depends(require_roles(JOB_VIEW_ROLES))
 ):
 
     result = db.execute(
-        select(Job).where(Job.id == job_id, Job.recruiter_id == user.id)
+        select(Job).where(Job.id == job_id, visible_jobs_clause(user))
     )
 
     job = result.scalars().first()

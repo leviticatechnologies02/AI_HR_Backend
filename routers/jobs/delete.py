@@ -3,7 +3,7 @@ from sqlmodel import Session, select
 from routers.admin_users.auth import get_current_user
 from model.models import Job, User
 from core.database import get_db
-from .dependencies import require_roles
+from .dependencies import require_roles, JOB_VIEW_ROLES, visible_jobs_clause
 
 router = APIRouter()
 
@@ -23,10 +23,10 @@ router = APIRouter()
 
 
 @router.delete("/delete/{job_id}")
-def delete_job(job_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def delete_job(job_id: int, db: Session = Depends(get_db), user: User = Depends(require_roles(JOB_VIEW_ROLES))):
 
     job = db.execute(
-        select(Job).where(Job.id == job_id, Job.recruiter_id == user.id)
+        select(Job).where(Job.id == job_id, visible_jobs_clause(user))
     ).scalar_one_or_none()
 
     if not job:

@@ -9,12 +9,13 @@ from datetime import datetime, timedelta
 from jose import jwt, JWTError
 
 from core.database import get_db
+from core.config import settings
 from model.models import Candidate
 
 router = APIRouter(tags=["Candidate Auth"])
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-SECRET_KEY = "your_super_secret_key"
+SECRET_KEY = settings.SECRET_KEY   # from .env, never hard-coded
 ALGORITHM = "HS256"
 
 class CandidateSignup(BaseModel):

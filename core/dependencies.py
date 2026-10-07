@@ -4,10 +4,11 @@ from sqlmodel import Session, select
 from jose import jwt, JWTError
 from core.database import get_db
 from model.models import User
+from core.config import settings
 from typing import List, Optional
 
  
-SECRET_KEY = "your_super_secret_key"
+SECRET_KEY = settings.SECRET_KEY   # from .env, never hard-coded
 ALGORITHM = "HS256"
 
 
@@ -18,6 +19,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        # Candidate-portal tokens carry sub=<candidate id>; they must never be
+        # read as the staff user that happens to have the same numeric id.
+        if payload.get("type") == "candidate":
             raise HTTPException(status_code=401, detail="Invalid token")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
