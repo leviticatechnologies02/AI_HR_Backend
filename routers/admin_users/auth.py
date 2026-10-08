@@ -12,6 +12,7 @@ from sqlalchemy import func
 from core.database import get_db
 from core.config import settings
 from model.Company_Settings.location import CompanyLocation
+from model.Company_Settings.company_profile import CompanyProfile
 from model.models import User
 from super_admin.multi_tenant import Tenant
 
@@ -181,6 +182,17 @@ def _tenant_name(db: Session, tenant_id: Optional[int]) -> Optional[str]:
     return tenant.tenant_name if tenant else None
 
 
+def _company_profile(db: Session, tenant_id: Optional[int]) -> Optional[CompanyProfile]:
+    """The company's profile as edited in Company Settings -> Company Profile (None if not filled in yet)."""
+    if tenant_id is None:
+        return None
+    return (
+        db.query(CompanyProfile)
+        .filter(CompanyProfile.tenant_id == tenant_id, CompanyProfile.is_deleted.is_(False))
+        .first()
+    )
+
+
 def _branch_name(db: Session, location_id: Optional[int]) -> Optional[str]:
     if location_id is None:
         return None
@@ -322,6 +334,7 @@ def login_form(
 
 @router.get("/me", response_model=CurrentUserResponse)
 def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    profile = _company_profile(db, current_user.tenant_id)
     return {
         "id": current_user.id,
         "name": current_user.name,
@@ -334,9 +347,14 @@ def get_me(current_user: User = Depends(get_current_user), db: Session = Depends
         "location_id": current_user.location_id,
         "branch_name": _branch_name(db, current_user.location_id),
         "username": current_user.username,
-        # Users created by a super admin have no company_name of their own; use their company's name.
-        "company_name": current_user.company_name or _tenant_name(db, current_user.tenant_id),
-        "company_website": current_user.company_website,
+        # One source of truth: the name/website saved in Company Settings -> Company Profile win.
+        # Before a profile exists (or if it is blank) fall back to what was typed at signup / the
+        # tenant name, exactly as before.
+        "company_name": (profile.company_name if profile and profile.company_name else None)
+        or current_user.company_name
+        or _tenant_name(db, current_user.tenant_id),
+        "company_website": (profile.company_website if profile and profile.company_website else None)
+        or current_user.company_website,
         "company_id": current_user.company_id,
     }
 
