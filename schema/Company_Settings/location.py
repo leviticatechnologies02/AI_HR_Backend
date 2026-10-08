@@ -1,5 +1,6 @@
 
 from __future__ import annotations
+import re
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, field_validator
@@ -21,6 +22,28 @@ class CompanyLocationBase(BaseModel):
     weekend_days:           Optional[str]   = None  
     is_default:             bool            = False
     is_active:              bool            = True
+
+    @field_validator("timezone", check_fields=False)
+    @classmethod
+    def validate_timezone(cls, v):
+        # Must look like an IANA name (Asia/Kolkata, America/New_York, UTC) - not free text like "delhi".
+        # Format check only, so it does not depend on a timezone database being installed (Windows).
+        if v is None:
+            return v
+        v = v.strip()
+        if not re.fullmatch(r"UTC|GMT|[A-Za-z_]+(/[A-Za-z0-9_+\-]+)+", v):
+            raise ValueError("Timezone must be a region name such as Asia/Kolkata or America/New_York")
+        return v
+
+    @field_validator("name", check_fields=False)
+    @classmethod
+    def validate_name(cls, v):
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("Branch name is required")
+        return v
 
     @field_validator("working_hours_start", "working_hours_end")
     @classmethod

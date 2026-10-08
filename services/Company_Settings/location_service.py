@@ -4,6 +4,7 @@ from typing import List, Optional
 import logging
 
 from fastapi import HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from model.Company_Settings.location import CompanyLocation
@@ -46,6 +47,22 @@ def get_location(db: Session, tenant_id: int, location_id: int) -> CompanyLocati
     return location
 
 
+def _assert_name_free(db: Session, tenant_id: int, name: str, exclude_id: Optional[int] = None) -> None:
+    """A company cannot have two active branches with the same name."""
+    q = db.query(CompanyLocation).filter(
+        CompanyLocation.tenant_id == tenant_id,
+        CompanyLocation.is_active.is_(True),
+        func.lower(func.trim(CompanyLocation.name)) == name.strip().lower(),
+    )
+    if exclude_id is not None:
+        q = q.filter(CompanyLocation.id != exclude_id)
+    if q.first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A branch named '{name.strip()}' already exists.",
+        )
+
+
 def create_location(
     db:        Session,
     tenant_id: int,
@@ -53,6 +70,8 @@ def create_location(
     actor_id:  Optional[int] = None,
 ) -> CompanyLocation:
     
+    _assert_name_free(db, tenant_id, data.name)
+
     if data.is_default:
         _clear_default(db, tenant_id)
 
@@ -75,6 +94,9 @@ def update_location(
     actor_id:    Optional[int] = None,
 ) -> CompanyLocation:
     location = _get_or_404(db, tenant_id, location_id)
+
+    if data.name is not None and data.name.strip().lower() != (location.name or "").strip().lower():
+        _assert_name_free(db, tenant_id, data.name, exclude_id=location_id)
 
     if data.is_default:
         _clear_default(db, tenant_id)

@@ -630,3 +630,51 @@ def test_me_returns_profile_fields_with_company_name_from_tenant(client, db):
         main.app.dependency_overrides.clear()
     assert me["company_name"] == "Acme"          # taken from the company (tenant) record
     assert me["username"] == "co1" and me["company_website"] == "acme.com"
+
+
+# ---------- company settings: branches ----------
+
+def _company_user(db, tenant_id):
+    u = User(name="company", email="company@x.com", hashed_password="x", role="company", tenant_id=tenant_id,
+             is_active=True, created_at=datetime.now(timezone.utc))
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    return u
+
+
+def test_add_branch_rejects_duplicates_and_bad_timezone_and_lists_it(client, db):
+    from core.dependencies import get_current_user as core_user
+    from routers.admin_users.auth import get_current_user as auth_user
+    from super_admin.multi_tenant import Tenant
+    t = Tenant(tenant_name="Acme", contact_email="a@acme.com", plan="BASIC", status="active")
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    co = _company_user(db, t.id)
+    main.app.dependency_overrides[core_user] = lambda: co
+    main.app.dependency_overrides[auth_user] = lambda: co
+    try:
+        base = {"name": "Hyderabad", "address": "Capital Park", "timezone": "Asia/Kolkata",
+                "working_hours_start": "09:00", "working_hours_end": "18:00", "weekend_days": "Saturday,Sunday"}
+        r = client.post("/company-settings/locations/", json=base)
+        assert r.status_code == 201, r.text
+
+        dup = client.post("/company-settings/locations/", json={**base, "name": "  hyderabad "})
+        assert dup.status_code == 409 and "already exists" in dup.json()["detail"]
+
+        bad = client.post("/company-settings/locations/", json={**base, "name": "Delhi", "timezone": "delhi"})
+        assert bad.status_code == 422
+
+        ok2 = client.post("/company-settings/locations/", json={**base, "name": "Chennai"})
+        assert ok2.status_code == 201
+
+        listed = client.get("/company-settings/locations/").json()
+        assert listed["total"] == 2 and sorted(l["name"] for l in listed["locations"]) == ["Chennai", "Hyderabad"]
+
+        # renaming onto an existing name is refused; keeping its own name is fine
+        cid = ok2.json()["id"]
+        assert client.put(f"/company-settings/locations/{cid}", json={"name": "Hyderabad"}).status_code == 409
+        assert client.put(f"/company-settings/locations/{cid}", json={"name": "Chennai"}).status_code == 200
+    finally:
+        main.app.dependency_overrides.clear()
