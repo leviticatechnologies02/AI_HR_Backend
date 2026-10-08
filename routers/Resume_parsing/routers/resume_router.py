@@ -14,7 +14,6 @@ from routers.Candidate_assessments.Assessment.utils.stage_sync import update_can
 from sqlmodel import select
 from sqlalchemy import text, func
 from core.dependencies import get_current_user
-from core.job_access import sees_all_jobs, visible_jobs_clause
 
 class StageUpdate(BaseModel):
     stage: str
