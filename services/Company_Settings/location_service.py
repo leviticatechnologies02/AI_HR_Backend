@@ -18,13 +18,28 @@ logger = logging.getLogger(__name__)
 
 
 def _attach_employee_count(db: Session, locations: List[CompanyLocation]) -> List[CompanyLocation]:
-    """Stamp a transient `employee_count` attribute onto each location for reporting."""
+    """Stamp a transient `employee_count` attribute onto each location for reporting.
+
+    One grouped query instead of one per branch. If the count cannot be computed
+    (e.g. employees.location_id column not migrated yet) the branch list must
+    still load, so we log and fall back to 0 instead of failing the request.
+    """
+    counts = {}
+    ids = [loc.id for loc in locations]
+    if ids:
+        try:
+            rows = (
+                db.query(Employee.location_id, func.count(Employee.id))
+                .filter(Employee.location_id.in_(ids), Employee.is_active.is_(True))
+                .group_by(Employee.location_id)
+                .all()
+            )
+            counts = {loc_id: n for loc_id, n in rows}
+        except Exception:
+            db.rollback()
+            logger.exception("Could not compute employee counts per branch; defaulting to 0")
     for loc in locations:
-        loc.employee_count = (
-            db.query(Employee)
-            .filter(Employee.location_id == loc.id, Employee.is_active.is_(True))
-            .count()
-        )
+        loc.employee_count = counts.get(loc.id, 0)
     return locations
 
 

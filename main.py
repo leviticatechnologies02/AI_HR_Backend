@@ -175,6 +175,21 @@ def on_startup():
         SQLModel.metadata.create_all(bind=engine)
         Base.metadata.create_all(bind=engine)
         print(" Database tables initialized successfully")
+        # create_all() never adds columns to tables that already exist, so make
+        # sure the branch (location) columns are present. Idempotent.
+        try:
+            from sqlalchemy import inspect as _sa_inspect, text as _sa_text
+            _insp = _sa_inspect(engine)
+            with engine.begin() as _conn:
+                if "employees" in _insp.get_table_names() and "location_id" not in [c["name"] for c in _insp.get_columns("employees")]:
+                    _conn.execute(_sa_text("ALTER TABLE employees ADD COLUMN location_id INTEGER REFERENCES company_locations(id)"))
+                    _conn.execute(_sa_text("CREATE INDEX IF NOT EXISTS ix_employees_location_id ON employees(location_id)"))
+                    print(" Added employees.location_id")
+                if "users" in _insp.get_table_names() and "location_id" not in [c["name"] for c in _insp.get_columns("users")]:
+                    _conn.execute(_sa_text("ALTER TABLE users ADD COLUMN location_id INTEGER"))
+                    print(" Added users.location_id")
+        except Exception as e:
+            print(f" Warning: branch column check failed: {e}")
     except Exception as e:
         print(f" Warning: Could not create database tables: {e}")
         print("  The application will continue, but database operations may fail.")
