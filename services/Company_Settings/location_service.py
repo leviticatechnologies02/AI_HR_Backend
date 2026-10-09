@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from typing import List, Optional
 import logging
@@ -84,7 +83,7 @@ def create_location(
     data:      CompanyLocationCreate,
     actor_id:  Optional[int] = None,
 ) -> CompanyLocation:
-    
+
     _assert_name_free(db, tenant_id, data.name)
 
     if data.is_default:

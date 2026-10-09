@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import re
 from datetime import datetime
@@ -6,7 +5,8 @@ from typing import Optional, List
 from pydantic import BaseModel, field_validator
 
 
-class CompanyLocationBase(BaseModel):
+class CompanyLocationFields(BaseModel):
+    """Plain fields, no validation. Used for responses so legacy rows (e.g. timezone 'delhi') can still be read."""
     name:                   str
     address:                Optional[str]   = None
     city:                   Optional[str]   = None
@@ -17,11 +17,15 @@ class CompanyLocationBase(BaseModel):
     longitude:              Optional[str]   = None
 
     timezone:               str
-    working_hours_start:    Optional[str]   = None  
-    working_hours_end:      Optional[str]   = None  
-    weekend_days:           Optional[str]   = None  
+    working_hours_start:    Optional[str]   = None
+    working_hours_end:      Optional[str]   = None
+    weekend_days:           Optional[str]   = None
     is_default:             bool            = False
     is_active:              bool            = True
+
+
+class CompanyLocationBase(CompanyLocationFields):
+    """Input validation: applied only when creating/updating, never when reading."""
 
     @field_validator("timezone", check_fields=False)
     @classmethod
@@ -65,7 +69,7 @@ class CompanyLocationUpdate(CompanyLocationBase):
     timezone: Optional[str] = None
 
 
-class CompanyLocationResponse(CompanyLocationBase):
+class CompanyLocationResponse(CompanyLocationFields):
     id:             int
     tenant_id:      int
     created_at:     datetime
