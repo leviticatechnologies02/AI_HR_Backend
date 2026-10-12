@@ -11,6 +11,9 @@ from routers.admin_users.auth import require_roles, get_password_hash
 
 router = APIRouter(prefix="/superadmin", tags=["Admin"]) 
 compat_router = APIRouter(prefix="/admin/user", tags=["Admin"])
+# Company-scoped user list for recruiter/admin screens (mounted at /api/admin -> GET /api/admin/users).
+# The /superadmin/* routes above stay superadmin-only.
+staff_router = APIRouter(tags=["Admin"])
 
 
 ROLE_CHOICES = Literal["recruiter", "company", "admin", "hr_admin", "candidate", "superadmin"]
@@ -193,3 +196,15 @@ def delete_user(
 
     db.delete(target_user)
     db.commit()
+
+
+@staff_router.get("/users")
+def list_company_users(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(["superadmin", "company", "admin", "hr_admin", "recruiter"])),
+):
+    """Users visible to the caller: everyone for superadmin, otherwise their own company only."""
+    q = select(User)
+    if (user.role or "").lower() != "superadmin":
+        q = q.where(User.tenant_id == user.tenant_id) if user.tenant_id is not None else q.where(User.id == user.id)
+    return [_serialize_user(u, db) for u in db.execute(q).scalars().all()]
