@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -107,6 +107,7 @@ def create_access_token(data: dict):
 
 
 def get_current_user(
+    request: Request,
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ) -> User:
@@ -128,6 +129,8 @@ def get_current_user(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account not activated by admin")
 
+    from core.dependencies import remember_selected_branch
+    remember_selected_branch(request, user)
     return user
 
 

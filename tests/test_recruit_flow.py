@@ -678,3 +678,111 @@ def test_add_branch_rejects_duplicates_and_bad_timezone_and_lists_it(client, db)
         assert client.put(f"/company-settings/locations/{cid}", json={"name": "Chennai"}).status_code == 200
     finally:
         main.app.dependency_overrides.clear()
+
+
+# ---------- recruitment pages follow the selected branch (real tokens + real X-Location-Id header) ----------
+
+def _branch_world(db):
+    from model.models import Application
+    from routers.admin_users.auth import create_access_token
+    t, (hyd, chn) = _tenant_with_branches(db)
+
+    def mk(email, role, loc):
+        u = User(name=email, email=email, hashed_password="x", role=role, tenant_id=t.id, location_id=loc,
+                 is_active=True, created_at=datetime.now(timezone.utc))
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        return u
+
+    users = dict(rh=mk("rh@a.com", "recruiter", hyd.id), rc=mk("rc@a.com", "recruiter", chn.id),
+                 company=mk("co@a.com", "company", None), admin_h=mk("ah@a.com", "admin", hyd.id))
+    for tag, rec, email in (("hyd", users["rh"], "h@x.com"), ("chn", users["rc"], "c@x.com")):
+        job = Job(title=f"{tag}-job", department="Eng", employment_type="Full-time", description="d",
+                  status="Published", role=tag, recruiter_id=rec.id)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        cand = Candidate(name=tag, email=email, role="candidate", skills=None, resume_url=None,
+                         notes=None, recruiter_comments=None)
+        db.add(cand)
+        db.commit()
+        db.refresh(cand)
+        db.add(Application(job_id=job.id, candidate_id=cand.id, candidate_name=tag, candidate_email=email,
+                           stage="Applied"))
+    db.commit()
+    tokens = {k: create_access_token({"sub": str(u.id)}) for k, u in users.items()}
+    return hyd, chn, tokens
+
+
+def _get(client, path, token, branch=None):
+    h = {"Authorization": f"Bearer {token}"}
+    if branch is not None:
+        h["X-Location-Id"] = str(branch)
+    return client.get(path, headers=h)
+
+
+def test_selected_branch_narrows_candidates_and_jobs_for_company(client, db):
+    hyd, chn, tok = _branch_world(db)
+
+    def emails(path, token, branch=None):
+        r = _get(client, path, token, branch)
+        assert r.status_code == 200, (path, r.status_code, r.text)
+        return sorted(c["email"] for c in r.json())
+
+    # pipeline candidates
+    assert emails("/api/pipeline/candidates/", tok["company"]) == ["c@x.com", "h@x.com"]
+    assert emails("/api/pipeline/candidates/", tok["company"], chn.id) == ["c@x.com"]
+    assert emails("/api/pipeline/candidates/", tok["company"], hyd.id) == ["h@x.com"]
+
+    # the dashboard/candidates page used by the company dashboard (used to be 403 for company)
+    r = _get(client, "/api/recruiter_dashboard/candidates", tok["company"])
+    assert r.status_code == 200, r.text
+    r2 = _get(client, "/api/recruiter_dashboard/candidates", tok["company"], chn.id)
+    assert r2.status_code == 200 and len(r2.json()) == 1
+
+    # jobs list
+    titles = lambda r: sorted(j["title"] for j in r.json())
+    assert titles(_get(client, "/api/jobs/list", tok["company"])) == ["chn-job", "hyd-job"]
+    assert titles(_get(client, "/api/jobs/list", tok["company"], chn.id)) == ["chn-job"]
+
+
+def test_header_cannot_widen_branch_admin_or_recruiter(client, db):
+    hyd, chn, tok = _branch_world(db)
+    emails = lambda r: sorted(c["email"] for c in r.json())
+    # branch admin of Hyderabad stays in Hyderabad even if the browser sends Chennai
+    r = _get(client, "/api/pipeline/candidates/", tok["admin_h"], chn.id)
+    assert r.status_code == 200 and emails(r) == ["h@x.com"]
+    # a recruiter only ever sees their own
+    r = _get(client, "/api/pipeline/candidates/", tok["rh"], chn.id)
+    assert r.status_code == 200 and emails(r) == ["h@x.com"]
+    # bad header values are ignored, not an error
+    r = _get(client, "/api/pipeline/candidates/", tok["company"], "abc")
+    assert r.status_code == 200 and emails(r) == ["c@x.com", "h@x.com"]
+
+
+def test_branch_selector_never_shrinks_the_branch_list_for_company(client, db):
+    """Bug: with a branch selected in the top bar, the location endpoints treated the company user like a
+    branch-locked admin, so the branch list (dropdown, dashboard count, settings page) collapsed to one branch
+    and other branches could not be edited."""
+    hyd, chn, tok = _branch_world(db)
+    auth = {"Authorization": f"Bearer {tok['company']}", "X-Location-Id": str(hyd.id)}
+
+    names = lambda r: sorted(l["name"] for l in r.json()["locations"])
+    r = client.get("/company-settings/locations/", headers=auth)
+    assert r.status_code == 200 and names(r) == ["Chennai", "Hyderabad"]            # both, although Hyderabad is selected
+
+    # another branch can still be edited, and a new one appears in the list straight away
+    assert client.put(f"/company-settings/locations/{chn.id}", json={"address": "New road"}, headers=auth).status_code == 200
+    new = client.post("/company-settings/locations/", headers=auth, json={
+        "name": "Pune", "address": "FC Road", "timezone": "Asia/Kolkata",
+        "working_hours_start": "09:00", "working_hours_end": "18:00", "weekend_days": "Saturday,Sunday"})
+    assert new.status_code == 201, new.text
+    r = client.get("/company-settings/locations/", headers=auth)
+    assert r.json()["total"] == 3 and "Pune" in names(r)
+
+    # a branch-locked admin still sees and manages only their own branch
+    adm = {"Authorization": f"Bearer {tok['admin_h']}"}
+    r = client.get("/company-settings/locations/", headers=adm)
+    assert names(r) == ["Hyderabad"]
+    assert client.put(f"/company-settings/locations/{chn.id}", json={"address": "x"}, headers=adm).status_code == 403

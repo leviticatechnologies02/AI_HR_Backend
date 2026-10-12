@@ -6,10 +6,21 @@ from datetime import datetime, timedelta
 
 from core.database import get_db
 from core.dependencies import require_roles
+from core.job_access import visible_jobs_clause
 from model.models import Job, Candidate, User, Application, CandidateRecord
 from schema.schemas import JobCreate, JobRead, JobUpdate, CandidateRead
 
 router = APIRouter()
+
+# Who may use the dashboard endpoints. Creating a job stays recruiter/admin only.
+# What each role actually sees is decided by visible_jobs_clause (own jobs / their company / their branch).
+DASHBOARD_ROLES = ["recruiter", "admin", "company", "hr_admin", "superadmin"]
+
+
+def _visible_job(db: Session, user: User, job_id: int):
+    return db.execute(
+        select(Job).where(Job.id == job_id, visible_jobs_clause(user))
+    ).scalar_one_or_none()
 
 
 
@@ -41,9 +52,9 @@ def list_jobs(
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(["recruiter", "admin"]))
+    user: User = Depends(require_roles(DASHBOARD_ROLES))
 ):
-    stmt = select(Job).where(Job.recruiter_id == user.id)
+    stmt = select(Job).where(visible_jobs_clause(user))
 
     if status:
         stmt = stmt.where(Job.status.ilike(f"%{status}%"))
@@ -63,13 +74,11 @@ def list_jobs(
 def job_detail(
     job_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(["recruiter", "admin"]))
+    user: User = Depends(require_roles(DASHBOARD_ROLES))
 ):
-    job = db.get(Job, job_id)
+    job = _visible_job(db, user, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
-    if job.recruiter_id != user.id and user.role.lower() != "admin":
-        raise HTTPException(403, "Access forbidden")
     return job
 
 
@@ -78,10 +87,10 @@ def update_job(
     job_id: int,
     payload: JobUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(["recruiter", "admin"]))
+    user: User = Depends(require_roles(DASHBOARD_ROLES))
 ):
-    job = db.get(Job, job_id)
-    if not job or (job.recruiter_id != user.id and user.role.lower() != "admin"):
+    job = _visible_job(db, user, job_id)
+    if not job:
         raise HTTPException(404, "Job not found or unauthorized")
 
     for key, value in payload.dict(exclude_unset=True).items():
@@ -97,10 +106,10 @@ def update_job(
 def delete_job(
     job_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(["recruiter", "admin"]))
+    user: User = Depends(require_roles(DASHBOARD_ROLES))
 ):
-    job = db.get(Job, job_id)
-    if not job or (job.recruiter_id != user.id and user.role.lower() != "admin"):
+    job = _visible_job(db, user, job_id)
+    if not job:
         raise HTTPException(404, "Job not found or unauthorized")
 
     db.delete(job)
@@ -116,15 +125,12 @@ def list_candidates(
     job_id: Optional[int] = None,
     stage: Optional[str] = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(["recruiter", "admin"]))
+    user: User = Depends(require_roles(DASHBOARD_ROLES))
 ):
  
-    if user.role.lower() == "admin":
-        job_ids = db.execute(select(Job.id)).scalars().all()
-    else:
-        job_ids = db.execute(
-            select(Job.id).where(Job.recruiter_id == user.id)
-        ).scalars().all()
+    job_ids = db.execute(
+        select(Job.id).where(visible_jobs_clause(user))
+    ).scalars().all()
 
     if not job_ids:
         return []
@@ -196,10 +202,10 @@ def list_candidates(
 def pipeline_view(
     job_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(["recruiter", "admin"]))
+    user: User = Depends(require_roles(DASHBOARD_ROLES))
 ):
-    job = db.get(Job, job_id)
-    if not job or (job.recruiter_id != user.id and user.role.lower() != "admin"):
+    job = _visible_job(db, user, job_id)
+    if not job:
         raise HTTPException(404, "Job not found or unauthorized")
 
     rows = db.execute(
@@ -217,12 +223,12 @@ def pipeline_view(
 def applications_over_time(
     days: int = 30,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles(["recruiter", "admin"]))
+    user: User = Depends(require_roles(DASHBOARD_ROLES))
 ):
     start_date = datetime.utcnow() - timedelta(days=days)
 
     job_ids = db.execute(
-        select(Job.id).where(Job.recruiter_id == user.id)
+        select(Job.id).where(visible_jobs_clause(user))
     ).scalars().all()
 
     if not job_ids:
@@ -245,7 +251,7 @@ def applications_over_time(
 
 
 @router.get("/settings")
-def recruiter_settings(user: User = Depends(require_roles(["recruiter", "admin"]))):
+def recruiter_settings(user: User = Depends(require_roles(DASHBOARD_ROLES))):
     return {
         "user_id": user.id,
         "email": user.email,

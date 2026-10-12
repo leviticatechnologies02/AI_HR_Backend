@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, Header
+from fastapi import Depends, HTTPException, Header, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlmodel import Session, select
 from jose import jwt, JWTError
@@ -14,7 +14,19 @@ ALGORITHM = "HS256"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+
+def remember_selected_branch(request: Request, user: User) -> None:
+    """Keep the branch picked in the top-bar selector (X-Location-Id header) on the user object for
+    this request. core.job_access only honours it for company / superadmin users."""
+    raw = request.headers.get("x-location-id")
+    try:
+        value = int(raw) if raw not in (None, "", "all") else None
+    except ValueError:
+        value = None
+    # User is a SQLModel class that rejects unknown fields, so set the transient value directly.
+    object.__setattr__(user, "selected_location_id", value)
+
+def get_current_user(request: Request, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
@@ -30,6 +42,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.get(User, int(user_id))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    remember_selected_branch(request, user)
     return user
 
  
@@ -72,6 +85,20 @@ def get_current_tenant_id(current_user: User = Depends(get_current_user)) -> Opt
         )
 
     return current_user.tenant_id
+
+
+def get_branch_lock(current_user: User = Depends(get_current_user)) -> Optional[int]:
+    """
+    The branch a user is LOCKED to, or None.
+
+    Only a branch-level admin is locked (to their own location_id). A company or super admin is never
+    locked: the top-bar branch selector narrows what they VIEW (jobs, candidates, employees) but must
+    never shrink the branch list itself or stop them managing another branch. Used by the
+    company-settings location endpoints; use get_current_location_id for the optional view filter.
+    """
+    if (current_user.role or "").lower() == "admin":
+        return current_user.location_id
+    return None
 
 
 def get_current_location_id(
