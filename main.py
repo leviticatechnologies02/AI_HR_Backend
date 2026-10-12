@@ -185,6 +185,10 @@ def on_startup():
                     _conn.execute(_sa_text("ALTER TABLE employees ADD COLUMN location_id INTEGER REFERENCES company_locations(id)"))
                     _conn.execute(_sa_text("CREATE INDEX IF NOT EXISTS ix_employees_location_id ON employees(location_id)"))
                     print(" Added employees.location_id")
+                if "job" in _insp.get_table_names() and "location_id" not in [c["name"] for c in _insp.get_columns("job")]:
+                    _conn.execute(_sa_text("ALTER TABLE job ADD COLUMN location_id INTEGER REFERENCES company_locations(id)"))
+                    _conn.execute(_sa_text("CREATE INDEX IF NOT EXISTS ix_job_location_id ON job(location_id)"))
+                    print(" Added job.location_id")
                 if "users" in _insp.get_table_names() and "location_id" not in [c["name"] for c in _insp.get_columns("users")]:
                     _conn.execute(_sa_text("ALTER TABLE users ADD COLUMN location_id INTEGER"))
                     print(" Added users.location_id")

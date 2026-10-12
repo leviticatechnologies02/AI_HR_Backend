@@ -5,6 +5,8 @@ from model.models import Job, User
 from .schemas import JobRead
 from routers.admin_users.auth import require_roles, get_current_user
 from core.database import get_db
+from core.job_access import resolve_job_branch
+from model.Company_Settings.location import CompanyLocation
 import shutil, os
 from datetime import datetime
 
@@ -19,6 +21,7 @@ async def create_job(
     department: str = Form(...),
     employmentType: str = Form(...),
     location: str = Form(None),
+    locationId: int = Form(None),     # branch (CompanyLocation.id) picked on the form
     isRemote: bool = Form(False),
     description: str = Form(...),
     responsibilities: str = Form(None),
@@ -59,11 +62,18 @@ async def create_job(
         with open(jd_path, "wb") as buffer:
             shutil.copyfileobj(jdFile.file, buffer)
 
+    # Which branch is this job for? Form choice, else matched from the text, else the recruiter's own branch.
+    branch_id = resolve_job_branch(session, current_user, locationId, location)
+    if branch_id is not None and not (location or "").strip():
+        branch = session.get(CompanyLocation, branch_id)
+        location = branch.name if branch else location
+
     job = Job(
         title=title,
         department=department,
         employment_type=employmentType,
         location=location,
+        location_id=branch_id,
         is_remote=isRemote,
         description=description,
         responsibilities=responsibilities,

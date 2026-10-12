@@ -786,3 +786,119 @@ def test_branch_selector_never_shrinks_the_branch_list_for_company(client, db):
     r = client.get("/company-settings/locations/", headers=adm)
     assert names(r) == ["Hyderabad"]
     assert client.put(f"/company-settings/locations/{chn.id}", json={"address": "x"}, headers=adm).status_code == 403
+
+
+# ---------- a job belongs to a branch (the bug: company picked Hyderabad and saw 0 jobs) ----------
+
+def _job_world(db):
+    """Company + two branches. The recruiter who posts has NO branch of their own (the case that used to break)."""
+    from routers.admin_users.auth import create_access_token
+    t, (hyd, chn) = _tenant_with_branches(db)
+
+    def mk(email, role, loc=None):
+        u = User(name=email, email=email, hashed_password="x", role=role, tenant_id=t.id, location_id=loc,
+                 is_active=True, created_at=datetime.now(timezone.utc))
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        return u
+
+    rec = mk("rec@a.com", "recruiter", None)
+    company = mk("co@a.com", "company")
+    admin_h = mk("ah@a.com", "admin", hyd.id)
+    tok = {k: create_access_token({"sub": str(u.id)}) for k, u in dict(rec=rec, company=company, admin_h=admin_h).items()}
+    return t, hyd, chn, rec, tok
+
+
+def _create_job(client, token, **fields):
+    data = {"title": "Dev", "department": "Eng", "employmentType": "Full-time", "description": "d", "status": "Active"}
+    data.update(fields)
+    return client.post("/api/jobs/create", headers={"Authorization": f"Bearer {token}"}, data=data)
+
+
+def _titles(client, token, branch=None):
+    h = {"Authorization": f"Bearer {token}"}
+    if branch is not None:
+        h["X-Location-Id"] = str(branch)
+    r = client.get("/api/jobs/list", headers=h)
+    assert r.status_code == 200, r.text
+    return sorted(j["title"] for j in r.json())
+
+
+def test_job_created_for_a_branch_shows_under_that_branch_even_if_recruiter_has_no_branch(client, db):
+    t, hyd, chn, rec, tok = _job_world(db)
+
+    r = _create_job(client, tok["rec"], title="Hyd job", locationId=str(hyd.id))
+    assert r.status_code == 200, r.text
+    r = _create_job(client, tok["rec"], title="Chn job", locationId=str(chn.id))
+    assert r.status_code == 200, r.text
+
+    assert _titles(client, tok["company"]) == ["Chn job", "Hyd job"]                 # All Branches
+    assert _titles(client, tok["company"], hyd.id) == ["Hyd job"]                    # Hyderabad selected
+    assert _titles(client, tok["company"], chn.id) == ["Chn job"]
+    assert _titles(client, tok["admin_h"]) == ["Hyd job"]                            # Hyderabad branch admin
+
+    listed = {j["title"]: j for j in client.get("/api/jobs/list", headers={"Authorization": f"Bearer {tok['company']}"}).json()}
+    assert listed["Hyd job"]["branch_name"] == "Hyderabad" and listed["Hyd job"]["location_id"] == hyd.id
+
+
+def test_job_typed_location_is_matched_to_a_branch_and_legacy_jobs_still_match(client, db):
+    t, hyd, chn, rec, tok = _job_world(db)
+
+    # typed text only (old form / API clients): "Hitech City, Hyderabad" -> Hyderabad branch
+    assert _create_job(client, tok["rec"], title="Typed", location="Hitech City, Hyderabad").status_code == 200
+    assert _titles(client, tok["company"], hyd.id) == ["Typed"]
+    assert _titles(client, tok["company"], chn.id) == []
+
+    # a legacy row: no location_id, only the text "Hyderabad" (created before the column existed)
+    db.add(Job(title="Legacy", department="Eng", employment_type="Full-time", description="d", status="Active",
+               role="x", location="Hyderabad", recruiter_id=rec.id))
+    db.commit()
+    assert _titles(client, tok["company"], hyd.id) == ["Legacy", "Typed"]
+    assert _titles(client, tok["company"], chn.id) == []
+
+
+def test_foreign_branch_rejected_and_editing_moves_the_job(client, db):
+    t, hyd, chn, rec, tok = _job_world(db)
+    assert _create_job(client, tok["rec"], title="Bad", locationId="99999").status_code == 400
+
+    r = _create_job(client, tok["rec"], title="Mover", locationId=str(hyd.id))
+    job_id = r.json()["job"]["id"]
+    assert _titles(client, tok["company"], hyd.id) == ["Mover"]
+    up = client.put(f"/api/jobs/update/{job_id}", params={"branch_id": chn.id},
+                    headers={"Authorization": f"Bearer {tok['rec']}"})
+    assert up.status_code == 200, up.text
+    assert _titles(client, tok["company"], hyd.id) == []
+    assert _titles(client, tok["company"], chn.id) == ["Mover"]
+
+
+def test_recruiter_can_list_company_branches_for_the_form(client, db):
+    t, hyd, chn, rec, tok = _job_world(db)
+    r = client.get("/api/jobs/branches", headers={"Authorization": f"Bearer {tok['rec']}"})
+    assert r.status_code == 200
+    assert [b["name"] for b in r.json()] == ["Hyderabad", "Chennai"]
+
+
+def test_job_branch_backfill_script(db):
+    import importlib.util, pathlib
+    t, hyd, chn, rec, tok = _job_world(db)
+    other = User(name="r2", email="r2@a.com", hashed_password="x", role="recruiter", tenant_id=t.id,
+                 location_id=chn.id, is_active=True, created_at=datetime.now(timezone.utc))
+    db.add(other)
+    db.commit()
+    db.refresh(other)
+    mk = lambda title, loc, who: Job(title=title, department="Eng", employment_type="Full-time", description="d",
+                                     status="Active", role="x", location=loc, recruiter_id=who.id)
+    db.add_all([mk("by-text", "Hitech City, Hyderabad", rec),      # text names a branch
+                mk("by-recruiter", None, other),                   # no text; recruiter works in Chennai
+                mk("neither", "Somewhere", rec)])                  # nothing to go on
+    db.commit()
+    path = pathlib.Path(__file__).resolve().parent.parent / "migrations" / "add_job_location_id.py"
+    spec = importlib.util.spec_from_file_location("add_job_location_id", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.run()
+    mod.run()                                                       # idempotent
+    db.expire_all()
+    got = {j.title: j.location_id for j in db.query(Job).all()}
+    assert got == {"by-text": hyd.id, "by-recruiter": chn.id, "neither": None}

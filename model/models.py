@@ -97,6 +97,9 @@ class Job(SQLModel, table=True):
     jd_file: Optional[str] = None
     status: str = "Draft"
     role: Optional[str] = None
+    # The branch (CompanyLocation) this job is for. Nullable: jobs created before this column existed fall
+    # back to matching the free-text `location` or the recruiter's branch (see core/job_access.py).
+    location_id: Optional[int] = Field(default=None, foreign_key="company_locations.id", index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     recruiter_id: int = Field(foreign_key="user.id")

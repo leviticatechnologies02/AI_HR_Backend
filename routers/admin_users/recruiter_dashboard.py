@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from core.database import get_db
 from core.dependencies import require_roles
-from core.job_access import visible_jobs_clause
+from core.job_access import visible_jobs_clause, resolve_job_branch
 from model.models import Job, Candidate, User, Application, CandidateRecord
 from schema.schemas import JobCreate, JobRead, JobUpdate, CandidateRead
 
@@ -32,8 +32,10 @@ def create_job(
     user: User = Depends(require_roles(["recruiter", "admin"]))
 ):
     now = datetime.utcnow()
+    data = payload.dict()
+    data["location_id"] = resolve_job_branch(db, user, data.get("location_id"), data.get("location"))
     job = Job(
-        **payload.dict(),
+        **data,
         recruiter_id=user.id,
         created_at=now,
         updated_at=now

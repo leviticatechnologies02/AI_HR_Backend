@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from . import create, update, delete, search, list, public_list
+from . import create, update, delete, search, list, public_list, branches
 
 router = APIRouter(tags=["Jobs"])
 
@@ -9,4 +9,5 @@ router.include_router(update.router)
 router.include_router(delete.router)
 router.include_router(search.router)
 router.include_router(list.router)
+router.include_router(branches.router)
 router.include_router(public_list.router)

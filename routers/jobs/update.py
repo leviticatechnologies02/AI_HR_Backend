@@ -9,6 +9,7 @@ from core.database import get_db
 from typing import Optional
 from core.dependencies import get_current_location_id
 from .dependencies import require_roles, JOB_VIEW_ROLES, visible_jobs_clause
+from core.job_access import resolve_job_branch
 
 router = APIRouter(tags=["Jobs"])
 @router.put("/update/{job_id}", response_model=Job)
@@ -18,6 +19,7 @@ def update_job(
     department: Optional[str] = None,
     employment_type: Optional[str] = None,
     location: Optional[str] = None,
+    branch_id: Optional[int] = None,     # branch (CompanyLocation.id); changes which branch the job belongs to
     is_remote: Optional[bool] = None,
     description: Optional[str] = None,
     responsibilities: Optional[str] = None,
@@ -53,6 +55,10 @@ def update_job(
         job.employment_type = employment_type
     if location is not None:
         job.location = location
+    if branch_id is not None or location is not None:
+        # An explicit branch wins; otherwise re-match the edited text; never leave the old branch behind by accident.
+        job.location_id = resolve_job_branch(db, user, branch_id, location) if branch_id is not None else (
+            resolve_job_branch(db, user, None, location) or job.location_id)
     if is_remote is not None:
         job.is_remote = is_remote
     if description is not None:

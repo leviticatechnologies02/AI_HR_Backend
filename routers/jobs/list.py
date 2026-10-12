@@ -28,7 +28,7 @@ def list_jobs(
     recruiters = {}
     if recruiter_ids:
         recruiters = {u.id: u for u in db.execute(sa_select(User).where(User.id.in_(recruiter_ids))).scalars().all()}
-    loc_ids = {u.location_id for u in recruiters.values() if u.location_id}
+    loc_ids = {u.location_id for u in recruiters.values() if u.location_id} | {j.location_id for j in jobs if j.location_id}
     branch_names = {}
     if loc_ids:
         branch_names = {l.id: l.name for l in db.execute(
@@ -57,8 +57,11 @@ def list_jobs(
             "status": job.status or "Draft",
             "recruiter_id": job.recruiter_id,
             "recruiter_name": recruiters[job.recruiter_id].name if job.recruiter_id in recruiters else None,
-            "branch_id": recruiters[job.recruiter_id].location_id if job.recruiter_id in recruiters else None,
-            "branch_name": branch_names.get(recruiters[job.recruiter_id].location_id) if job.recruiter_id in recruiters else None,
+            # The job's own branch; jobs without one fall back to the recruiter's branch.
+            "location_id": job.location_id,
+            "branch_id": job.location_id or (recruiters[job.recruiter_id].location_id if job.recruiter_id in recruiters else None),
+            "branch_name": branch_names.get(
+                job.location_id or (recruiters[job.recruiter_id].location_id if job.recruiter_id in recruiters else None)),
             "created_at": job.created_at.isoformat(),
             "updated_at": job.updated_at.isoformat(),
             "applications": [
