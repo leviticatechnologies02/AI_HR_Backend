@@ -107,3 +107,4 @@ if settings.SECRET_KEY in _WEAK_SECRETS or len(settings.SECRET_KEY) < 32:
         "Anyone who knows the key can forge login tokens.",
         stacklevel=2,
     )
+    
